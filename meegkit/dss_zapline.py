@@ -1,412 +1,36 @@
-"""Denoising source separation."""
-# Authors:  Nicolas Barascud <nicolas.barascud@gmail.com>
-#           Maciej Szul <maciej.szul@isc.cnrs.fr>
+"""Zapline-plus for automatic removal of frequency-specific noise artifacts.
+
+This module implements Zapline-plus, an extension of the Zapline algorithm
+that enables fully automatic removal of line noise and other frequency-specific
+artifacts from M/EEG data.
+
+Based on:
+Klug, M., & Kloosterman, N. A. (2022). Zapline-plus: A Zapline extension for
+automatic and adaptive removal of frequency-specific noise artifacts in M/EEG.
+Human Brain Mapping, 43(9), 2743-2758.
+
+Original Zapline by:
+de Cheveigné, A. (2020). ZapLine: A simple and effective method to remove
+power line artifacts. NeuroImage, 207, 116356.
+
+
+Differences from Matlab implementation
+--------------------------------------
+
+Finding noise frequencies:
+- one iteration returning all frequencies
+
+Plotting:
+- only once per frequency after cleaning
+"""
+
 import logging
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
-from scipy import linalg
-from scipy.signal import butter, find_peaks, sosfiltfilt, welch
+from scipy import signal
 
-from .tspca import tsr
-from .utils import (
-    demean,
-    gaussfilt,
-    matmul3d,
-    mean_over_trials,
-    pca,
-    smooth,
-    theshapeof,
-    tscov,
-    wpwr,
-)
-
-
-def dss1(X, weights=None, keep1=None, keep2=1e-12):
-    """DSS to maximise repeatability across trials.
-
-    Evoked-biased DSS denoising.
-
-    Parameters
-    ----------
-    X: array, shape=(n_samples, n_chans, n_trials)
-        Data to denoise.
-    weights: array
-        Weights.
-    keep1: int
-        Number of PCs to retain in function:`dss0` (default=all).
-    keep2: float
-        Ignore PCs smaller than keep2 in function:`dss0` (default=1e-12).
-
-    Returns
-    -------
-    todss: array, shape=(n_dss_components, n_chans)
-        Denoising matrix to convert X to normalized DSS components.
-    from: array, shape=(n_dss_components, n_chans)
-        Matrix to convert DSS components back to sensor space.
-    pwr0: array
-        Power per component (raw).
-    pwr1: array
-        Power per component (averaged).
-
-    """
-    # if demean: # remove weighted mean
-    #   X = demean(X, weights)
-
-    # weighted mean over trials (--> bias function for DSS)
-    xx, ww = mean_over_trials(X, weights)
-
-    # covariance of raw and biased X
-    c0, nc0 = tscov(X, None, weights)
-    c1, nc1 = tscov(xx, None, ww)
-    c0 /= nc0
-    c1 /= nc1
-
-    todss, fromdss, pwr0, pwr1 = dss0(c0, c1, keep1, keep2)
-
-    return todss, fromdss, pwr0, pwr1
-
-
-def dss0(c0, c1, keep1=None, keep2=1e-9, return_unmixing=True):
-    """DSS base function.
-
-    This function allows specifying arbitrary bias functions (as compared to
-    the function:`dss1`, which forces the bias to be the mean over trials).
-
-    Parameters
-    ----------
-    c0: array, shape=(n_chans, n_chans)
-        Baseline covariance.
-    c1: array, shape=(n_chans, n_chans)
-        Biased covariance.
-    keep1: int | None
-        Number of PCs to retain (default=None, which keeps all).
-    keep2: float
-        Ignore PCs smaller than keep2 (default=1e-9).
-    return_unmixing : bool
-        If True (default), return the unmixing matrix.
-
-    Returns
-    -------
-    todss: array, shape=(n_chans, n_dss_components)
-        Matrix to convert X to normalized DSS components.
-    fromdss : array, shape=(n_dss_components, n_chans)
-        Matrix to transform back to original space. Only returned if
-        ``return_unmixing`` is True.
-    pwr0: array
-        Power per component (baseline).
-    pwr1: array
-        Power per component (biased).
-
-    Notes
-    -----
-    The data mean is NOT removed prior to processing.
-
-    """
-    # Check size and squareness
-    assert c0.shape == c1.shape == (c0.shape[0], c0.shape[0]), \
-        "c0 and c1 should have the same size, and be square"
-
-    # Check for NaN or INF
-    assert not (np.any(np.isnan(c0)) or np.any(np.isinf(c0))), "NaN or INF in c0"
-    assert not (np.any(np.isnan(c1)) or np.any(np.isinf(c1))), "NaN or INF in c1"
-
-    # derive PCA and whitening matrix from unbiased covariance
-    eigvec0, eigval0 = pca(c0, max_comps=keep1, thresh=keep2)
-
-    # apply whitening and PCA matrices to the biased covariance
-    # (== covariance of bias whitened data)
-    W = np.diag(np.sqrt(1. / eigval0))  # diagonal of whitening matrix
-
-    # c1 is projected into whitened PCA space of data channels
-    c2 = (eigvec0 @ W).T @ c1 @ (eigvec0 @ W)
-
-    # proj. matrix from whitened data space to a space maximizing bias
-    eigvec2, eigval2 = pca(c2, max_comps=keep1, thresh=keep2)
-
-    # DSS matrix (raw data to normalized DSS)
-    todss = eigvec0 @ W @ eigvec2
-
-    # Normalise DSS matrix
-    N = np.sqrt(np.diag(todss.T @ c0 @ todss))
-    todss /= N
-
-    pwr0 = np.sqrt(np.sum((c0 @ todss) ** 2, axis=0))
-    pwr1 = np.sqrt(np.sum((c1 @ todss) ** 2, axis=0))
-
-    # Return data
-    # next line equiv. to: np.array([np.dot(todss, ep) for ep in data])
-    # dss_data = np.einsum('ij,hjk->hik', todss, data)
-
-    if return_unmixing:
-        fromdss = linalg.pinv(todss)
-        return todss, fromdss, pwr0, pwr1
-    else:
-        return todss, pwr0, pwr1
-
-
-def dss_line(X, fline, sfreq, nremove=1, nfft=1024, nkeep=None, blocksize=None,
-             show=False):
-    """Apply DSS to remove power line artifacts.
-
-    Implements the ZapLine algorithm described in [1]_.
-
-    Parameters
-    ----------
-    X : data, shape=(n_samples, n_chans, n_trials)
-        Input data.
-    fline : float
-        Line frequency (normalized to sfreq, if ``sfreq`` == 1).
-    sfreq : float
-        Sampling frequency (default=1, which assymes ``fline`` is normalised).
-    nremove : int
-        Number of line noise components to remove (default=1).
-    nfft : int
-        FFT size (default=1024).
-    nkeep : int
-        Number of components to keep in DSS (default=None).
-    blocksize : int
-        If not None (default), covariance is computed on blocks of
-        ``blocksize`` samples. This may improve performance for large datasets.
-    show: bool
-        If True, show DSS results (default=False).
-
-    Returns
-    -------
-    y : array, shape=(n_samples, n_chans, n_trials)
-        Denoised data.
-    artifact : array, shape=(n_samples, n_chans, n_trials)
-        Artifact
-
-    Examples
-    --------
-    Apply to X, assuming line frequency=50Hz and sampling rate=1000Hz, plot
-    results:
-    >>> dss_line(X, 50/1000)
-
-    Removing 4 line-dominated components:
-    >>> dss_line(X, 50/1000, 4)
-
-    Truncating PCs beyond the 30th to avoid overfitting:
-    >>> dss_line(X, 50/1000, 4, nkeep=30);
-
-    Return cleaned data in y, noise in yy, do not plot:
-    >>> [y, artifact] = dss_line(X, 60/1000)
-
-    References
-    ----------
-    .. [1] de Cheveigné, A. (2019). ZapLine: A simple and effective method to remove
-       power line artifacts. NeuroImage, 116356.
-       https://doi.org/10.1016/j.neuroimage.2019.116356
-
-    """
-    if X.shape[0] < nfft:
-        print(f"Reducing nfft to {X.shape[0]}")
-        nfft = X.shape[0]
-    n_samples, n_chans, _ = theshapeof(X)
-    if blocksize is None:
-        blocksize = n_samples
-
-    # Recentre data
-    X = demean(X, inplace=True)
-
-    # Cancel line_frequency and harmonics + light lowpass
-    X_filt = smooth(X, sfreq / fline)
-
-    # X - X_filt results in the artifact plus some residual biological signal
-    X_noise = X - X_filt
-
-    # Reduce dimensionality to avoid overfitting
-    if nkeep is not None:
-        cov_X_res = tscov(X_noise)[0]
-        V, _ = pca(cov_X_res, nkeep)
-        X_noise_pca = X_noise @ V
-    else:
-        X_noise_pca = X_noise.copy()
-        nkeep = n_chans
-
-    # Compute blockwise covariances of raw and biased data
-    n_harm = np.floor((sfreq / 2) / fline).astype(int)
-    c0 = np.zeros((nkeep, nkeep))
-    c1 = np.zeros((nkeep, nkeep))
-    for X_block in sliding_window_view(X_noise_pca, (blocksize, nkeep),
-                                       axis=(0, 1))[::blocksize, 0]:
-        # if n_trials>1, reshape to (n_samples, nkeep, n_trials)
-        if X_block.ndim == 3:
-            X_block = X_block.transpose(1, 2, 0)
-
-        # bias data
-        c0 += tscov(X_block)[0]
-        c1 += tscov(gaussfilt(X_block, sfreq, fline, fwhm=1, n_harm=n_harm))[0]
-
-    # DSS to isolate line components from residual
-    todss, _, pwr0, pwr1 = dss0(c0, c1)
-
-    if show:
-        import matplotlib.pyplot as plt
-        plt.plot(pwr1 / pwr0, ".-")
-        plt.xlabel("component")
-        plt.ylabel("score")
-        plt.title("DSS to enhance line frequencies")
-        plt.show()
-
-    # Remove line components from X_noise
-    idx_remove = np.arange(nremove)
-    X_artifact = matmul3d(X_noise_pca, todss[:, idx_remove])
-    X_res = tsr(X_noise, X_artifact)[0]  # project them out
-
-    # reconstruct clean signal
-    y = X_filt + X_res
-
-    # Power of components
-    p = wpwr(X - y)[0] / wpwr(X)[0]
-    print(f"Power of components removed by DSS: {p:.2f}")
-    # return the reconstructed clean signal, and the artifact
-    return y, X - y
-
-
-def dss_line_iter(data, fline, sfreq, win_sz=10, spot_sz=2.5,
-                  nfft=512, show=False, dirname=None, extension=".png", n_iter_max=100):
-    """Remove power line artifact iteratively.
-
-    This method applies dss_line() until the artifact has been smoothed out
-    from the spectrum.
-
-    Parameters
-    ----------
-    data : data, shape=(n_samples, n_chans, n_trials)
-        Input data.
-    fline : float
-        Line frequency.
-    sfreq : float
-        Sampling frequency.
-    win_sz : float
-        Half of the width of the window around the target frequency used to fit
-        the polynomial (default=10).
-    spot_sz : float
-        Half of the width of the window around the target frequency used to
-        remove the peak and interpolate (default=2.5).
-    nfft : int
-        FFT size for the internal PSD calculation (default=512).
-    show: bool
-        Produce a visual output of each iteration (default=False).
-    dirname: str
-        Path to the directory where visual outputs are saved when show is 'True'.
-        If 'None', does not save the outputs. (default=None)
-    extension: str
-        Extension of the images filenames. Must be compatible with plt.savefig()
-        function. (default=".png")
-    n_iter_max : int
-        Maximum number of iterations (default=100).
-
-    Returns
-    -------
-    data : array, shape=(n_samples, n_chans, n_trials)
-        Denoised data.
-    iterations : int
-        Number of iterations.
-    """
-
-    def nan_basic_interp(array):
-        """Nan interpolation."""
-        nans, ix = np.isnan(array), lambda x: x.nonzero()[0]
-        array[nans] = np.interp(ix(nans), ix(~nans), array[~nans])
-        return array
-
-    freq_rn = [fline - win_sz, fline + win_sz]
-    freq_sp = [fline - spot_sz, fline + spot_sz]
-    freq, psd = welch(data, fs=sfreq, nfft=nfft, axis=0)
-
-    freq_rn_ix = np.logical_and(freq >= freq_rn[0],
-                                freq <= freq_rn[1])
-    freq_used = freq[freq_rn_ix]
-    freq_sp_ix = np.logical_and(freq_used >= freq_sp[0],
-                                freq_used <= freq_sp[1])
-
-    if psd.ndim == 3:
-        mean_psd = np.mean(psd, axis=(1, 2))[freq_rn_ix]
-    elif psd.ndim == 2:
-        mean_psd = np.mean(psd, axis=(1))[freq_rn_ix]
-
-    mean_psd_wospot = mean_psd.copy()
-    mean_psd_wospot[freq_sp_ix] = np.nan
-    mean_psd_tf = nan_basic_interp(mean_psd_wospot)
-    pf = np.polyfit(freq_used, mean_psd_tf, 3)
-    p = np.poly1d(pf)
-    clean_fit_line = p(freq_used)
-
-    aggr_resid = []
-    iterations = 0
-    while iterations < n_iter_max:
-        data, _ = dss_line(data, fline, sfreq, nfft=nfft, nremove=1)
-        freq, psd = welch(data, fs=sfreq, nfft=nfft, axis=0)
-        if psd.ndim == 3:
-            mean_psd = np.mean(psd, axis=(1, 2))[freq_rn_ix]
-        elif psd.ndim == 2:
-            mean_psd = np.mean(psd, axis=(1))[freq_rn_ix]
-
-        residuals = mean_psd - clean_fit_line
-        mean_score = np.mean(residuals[freq_sp_ix])
-        aggr_resid.append(mean_score)
-
-        print(f"Iteration {iterations} score: {mean_score}")
-
-        if show:
-            import matplotlib.pyplot as plt
-            f, ax = plt.subplots(2, 2, figsize=(12, 6), facecolor="white")
-
-            if psd.ndim == 3:
-                mean_sens = np.mean(psd, axis=2)
-            elif psd.ndim == 2:
-                mean_sens = psd
-
-            y = mean_sens[freq_rn_ix]
-            ax.flat[0].plot(freq_used, y)
-            ax.flat[0].set_title("Mean PSD across trials")
-            ax.flat[0].set_xlabel("Frequency (Hz)")
-            ax.flat[0].set_ylabel("Power")
-
-            ax.flat[1].plot(freq_used, mean_psd_tf, c="gray",
-                            label="Interpolated mean PSD")
-            ax.flat[1].plot(freq_used, mean_psd, c="blue", label="Mean PSD")
-            ax.flat[1].plot(freq_used, clean_fit_line, c="red", label="Fitted polynomial")
-            ax.flat[1].set_title("Mean PSD across trials and sensors")
-            ax.flat[1].set_xlabel("Frequency (Hz)")
-            ax.flat[1].set_ylabel("Power")
-            ax.flat[1].legend()
-
-            tf_ix = np.where(freq_used <= fline)[0][-1]
-            ax.flat[2].plot(freq_used, residuals)
-            color = "green"
-            if mean_score <= 0:
-                color = "red"
-            ax.flat[2].scatter(freq_used[tf_ix], residuals[tf_ix], c=color)
-            ax.flat[2].set_title("Residuals")
-            ax.flat[2].set_xlabel("Frequency (Hz)")
-            ax.flat[2].set_ylabel("Power")
-
-            ax.flat[3].plot(np.arange(iterations + 1), aggr_resid, marker="o")
-            ax.flat[3].set_title("Aggregated residuals")
-            ax.flat[3].set_xlabel("Iteration")
-            ax.flat[3].set_ylabel("Power")
-
-            plt.tight_layout()
-            if dirname is not None:
-                plt.savefig(Path(dirname) / f"dss_iter_{iterations:03}{extension}")
-            plt.show()
-
-        if mean_score <= 0:
-            break
-
-        iterations += 1
-
-    if iterations == n_iter_max:
-        raise RuntimeError("Could not converge. Consider increasing the "
-                           "maximum number of iterations")
-
-    return data, iterations
+from meegkit.dss import dss_line
 
 
 def dss_line_plus(
@@ -436,7 +60,6 @@ def dss_line_plus(
     plotResults: bool = False,
     figsize: tuple[int, int] = (14, 10),
     vanilla_mode: bool = False,
-    dirname: str = None
 ) -> tuple[np.ndarray, dict]:
     """Remove line noise and other frequency-specific artifacts using Zapline-plus.
 
@@ -521,9 +144,6 @@ def dss_line_plus(
         - No individual chunk frequency detection
         - No adaptive parameter tuning
         Requires fline to be specified (not None). Defaults to False.
-    dirname: str
-        Path to the directory where visual outputs are saved when show is 'True'.
-        If 'None', does not save the outputs. Defaults to None.
 
     Returns
     -------
@@ -799,7 +419,6 @@ def dss_line_plus(
                 target_freq,
                 config["analytics"][f"freq_{freq_idx}"],
                 figsize,
-                dirname,
             )
 
     # add flat channels back to data, if present
@@ -946,7 +565,7 @@ def _adaptive_chunking(
         return [(0, n_times)]
 
     # find all peaks to get prominence distribution
-    peaks_all, properties_all = find_peaks(distances, prominence=0)
+    peaks_all, properties_all = signal.find_peaks(distances, prominence=0)
 
     if len(peaks_all) == 0 or "prominences" not in properties_all:
         # No peaks found
@@ -959,11 +578,11 @@ def _adaptive_chunking(
     min_prominence = np.quantile(prominences, prominence_quantile)
     min_distance_epochs = int(min_chunk_length)  # Convert seconds to epochs
 
-    peaks, properties = find_peaks(
+    peaks, properties = signal.find_peaks(
         distances, prominence=min_prominence, distance=min_distance_epochs
     )
 
-    # convert peak locations (in epochs) to sample indices
+    # cconvert peak locations (in epochs) to sample indices
     chunk_starts = [0]
     for peak in peaks:
         chunk_start_sample = peak * epoch_length
@@ -1193,7 +812,7 @@ def _compute_psd(data, sfreq, nperseg=None):
     if nperseg is None:
         nperseg = int(sfreq * 4)  # 4-second windows
 
-    freqs, psd = welch(
+    freqs, psd = signal.welch(
         data,
         fs=sfreq,
         window="hann",
@@ -1214,21 +833,13 @@ def _narrowband_filter(data, sfreq, center_freq, bandwidth=3.0):
     low = max(low, 0.001)
     high = min(high, 0.999)
 
-    sos = butter(4, [low, high], btype="band", output="sos")
-    filtered = sosfiltfilt(sos, data, axis=0)
+    sos = signal.butter(4, [low, high], btype="band", output="sos")
+    filtered = signal.sosfiltfilt(sos, data, axis=0)
 
     return filtered
 
 
-def _plot_cleaning_results(
-    original,
-    cleaned,
-    sfreq,
-    target_freq,
-    analytics,
-    figsize,
-    dirname,
-):
+def _plot_cleaning_results(original, cleaned, sfreq, target_freq, analytics, figsize):
     """Generate diagnostic plots for cleaning results."""
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(2, 4, hspace=0.3, wspace=0.3)
@@ -1347,8 +958,5 @@ def _plot_cleaning_results(
     )
 
     plt.show()
-
-    if dirname is not None:
-        plt.savefig(f"{dirname}/dss_line_plus_results.png")
 
     return fig
