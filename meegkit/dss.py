@@ -1,6 +1,7 @@
 """Denoising source separation."""
 # Authors:  Nicolas Barascud <nicolas.barascud@gmail.com>
 #           Maciej Szul <maciej.szul@isc.cnrs.fr>
+#           Roy Eric Wieske <eric.wieske@gmail.com>
 import logging
 from pathlib import Path
 
@@ -556,10 +557,20 @@ def dss_line_plus(
     Remove line noise with automatic frequency detection:
     >>> clean_data, config = dss_line_plus(data, sfreq=500)
 
+    References
+    ----------
+    .. [1] Klug, M., & Kloosterman, N. A. (2022). Zapline-plus: A Zapline extension for
+       automatic and adaptive removal of frequency-specific noise artifacts in M/EEG.
+       Human Brain Mapping, 43(9), 2743-2758.
+       https://doi.org/10.1002/hbm.25832
+
+    .. [2] Klug, M. (2023). Zapline-Plus GitHub repository.
+       https://github.com/MariusKlug/zapline-plus
+
     """
     n_times, n_chans = data.shape
 
-    # Handle vanilla mode (ZapLine without plus)
+    # handle vanilla mode (ZapLine without plus)
     if vanilla_mode:
         logging.warning(
             "vanilla_mode=True: Using vanilla Zapline behavior. "
