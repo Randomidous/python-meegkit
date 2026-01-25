@@ -414,116 +414,123 @@ def dss_line_plus(
     sfreq: float,
     fline: float | list[float] | None = None,
     nkeep: int = 0,
-    adaptiveNremove: bool = True,
-    fixedNremove: int = 1,
-    minfreq: float = 17.0,
-    maxfreq: float = 99.0,
-    chunkLength: float = 0.0,
-    minChunkLength: float = 30.0,
-    noiseCompDetectSigma: float = 3.0,
-    adaptiveSigma: bool = True,
-    minsigma: float = 2.5,
-    maxsigma: float = 4.0,
-    detectionWinsize: float = 6.0,
-    coarseFreqDetectPowerDiff: float = 4.0,
-    coarseFreqDetectLowerPowerDiff: float = 1.76,
-    searchIndividualNoise: bool = True,
-    freqDetectMultFine: float = 2.0,
-    detailedFreqBoundsUpper: tuple[float, float] = (0.05, 0.05),
-    detailedFreqBoundsLower: tuple[float, float] = (0.4, 0.1),
-    maxProportionAboveUpper: float = 0.005,
-    maxProportionBelowLower: float = 0.005,
-    plotResults: bool = False,
+    adaptive_n_remove: bool = True,
+    fixed_n_remove: int = 1,
+    chunk_length: float = 0.0,
+    min_chunk_length: float = 30.0,
+    plot_results: bool = False,
     figsize: tuple[int, int] = (14, 10),
     vanilla_mode: bool = False,
-    dirname: str = None
+    dirname: str | None = None,
+    noise_comp_sigma: float = 3.0,
+    adaptive_sigma: bool = True,
+    min_sigma: float = 2.5,
+    max_sigma: float = 4.0,
+    min_freq: float = 17.0,
+    max_freq: float = 99.0,
+    win_sz: float = 6.0,
+    coarse_power_diff_hi: float = 4.0,
+    coarse_power_diff_lo: float = 1.76,
+    detect_chunk_freqs: bool = True,
+    fine_threshold_mult: float = 2.0,
+    fine_bounds_hi: tuple[float, float] = (0.05, 0.05),
+    fine_bounds_lo: tuple[float, float] = (0.4, 0.1),
+    max_prop_above_hi: float = 0.005,
+    max_prop_below_lo: float = 0.005,
 ) -> tuple[np.ndarray, dict]:
     """Remove line noise and other frequency-specific artifacts using Zapline-plus.
 
     Parameters
     ----------
-        data : array, shape=(n_times, n_chans)
-        Input data. Note that data is expected in time x channels format.
+    Core parameters
+    ~~~~~~~~~~~~~~~
+    data : array, shape=(n_times, n_chans)
+        Input data (time, channels).
     sfreq : float
         Sampling frequency in Hz.
     fline : float | list of float | None
         Noise frequency or frequencies to remove. If None, frequencies are
-        detected automatically. Defaults to None.
-    nkeep : int | None
+        detected automatically (default=None).
+    nkeep : int
         Number of principal components to keep in DSS. If 0, no dimensionality
-        reduction is applied. Defaults to 0.
-    adaptiveNremove : bool | None
-        If True, automatically detect the number of components to remove.
-        If False, use fixedNremove for all chunks. Defaults to True.
-    fixedNremove : int | None
+        reduction is applied (default=0).
+    adaptive_n_remove : bool
+        Automatically detect the number of components to remove
+        (default=True).
+    fixed_n_remove : int
         Fixed number of components to remove per chunk. Used when
-        adaptiveNremove=False, or as minimum when adaptiveNremove=True.
-        Defaults to 1.
-    minfreq : float | None
-        Minimum frequency (Hz) to consider when detecting noise automatically.
-        Defaults to 17.0.
-    maxfreq : float | None
-        Maximum frequency (Hz) to consider when detecting noise automatically.
-        Defaults to 99.0.
-    chunkLength : float | None
-        Length of chunks (seconds) for cleaning. If 0, adaptive chunking based
-        on noise covariance stability is used. Set to -1 via vanilla_mode to
-        process the entire recording as a single chunk. Defaults to 0.0.
-    minChunkLength : float | None
-        Minimum chunk length (seconds) when using adaptive chunking.
-        Defaults to 30.0.
-    noiseCompDetectSigma : float | None
-        Initial SD threshold for iterative outlier detection of noise components.
-        Defaults to 3.0.
-    adaptiveSigma : bool | None
-        If True, automatically adapt noiseCompDetectSigma and fixedNremove
-        based on cleaning results. Defaults to True.
-    minsigma : float | None
-        Minimum SD threshold when adapting noiseCompDetectSigma.
-        Defaults to 2.5.
-    maxsigma : float | None
-        Maximum SD threshold when adapting noiseCompDetectSigma.
-        Defaults to 4.0.
-    detectionWinsize : float | None
-        Window size (Hz) for noise frequency detection. Defaults to 6.0.
-    coarseFreqDetectPowerDiff : float | None
-        Threshold (10*log10) above center power to detect a peak as noise.
-        Defaults to 4.0.
-    coarseFreqDetectLowerPowerDiff : float | None
-        Threshold (10*log10) above center power to detect end of noise peak.
-        Defaults to 1.76.
-    searchIndividualNoise : bool | None
-        If True, search for individual noise peaks in each chunk.
-        Defaults to True.
-    freqDetectMultFine : float | None
-        Multiplier for fine noise frequency detection threshold. Defaults to 2.0.
-    detailedFreqBoundsUpper : tuple of float | None
-        Frequency boundaries (Hz) for fine threshold of too weak cleaning.
-        Defaults to (0.05, 0.05).
-    detailedFreqBoundsLower : tuple of float | None
-        Frequency boundaries (Hz) for fine threshold of too strong cleaning.
-        Defaults to (0.4, 0.1).
-    maxProportionAboveUpper : float | None
-        Maximum proportion of samples above upper threshold before adapting.
-        Defaults to 0.005.
-    maxProportionBelowLower : float | None
-        Maximum proportion of samples below lower threshold before adapting.
-        Defaults to 0.005.
-    plotResults : bool | None
-        If True, generate diagnostic plots for each cleaned frequency.
-        Defaults to False.
+        adaptive_n_remove=False, or as minimum when adaptive_n_remove=True
+        (default=1).
+    chunk_length : float
+        Length of chunks in seconds. If 0, adaptive chunking is used.
+        If -1, process the entire recording as a single chunk
+        (default=0.0).
+    min_chunk_length : float
+        Minimum chunk length in seconds when using adaptive chunking
+        (default=30.0).
+    plot_results : bool
+        If True, generate diagnostic plots for each cleaned frequency
+        (default=False).
     figsize : tuple of int
-        Figure size for diagnostic plots. Defaults to (14, 10).
-    vanilla_mode : bool | None
-        If True, disable all Zapline-plus features and use vanilla Zapline behavior:
-        - Process entire dataset as single chunk
-        - Use fixed component removal (no adaptive detection)
-        - No individual chunk frequency detection
-        - No adaptive parameter tuning
-        Requires fline to be specified (not None). Defaults to False.
-    dirname: str
-        Path to the directory where visual outputs are saved when show is 'True'.
-        If 'None', does not save the outputs. Defaults to None.
+        Figure size for diagnostic plots (default=(14, 10)).
+    vanilla_mode : bool
+        If True, disable all Zapline-plus features and use vanilla Zapline
+        behavior (default=False).
+    dirname : str | None
+        Path to directory where visual outputs are saved when plot_results is True
+        (default=None).
+
+    Sigma / component detection parameters
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    noise_comp_sigma : float
+        Initial SD threshold for iterative outlier detection of noise
+        components (default=3.0).
+    adaptive_sigma : bool
+        Automatically adapt noise_comp_sigma and fixed_n_remove based on
+        cleaning results (default=True).
+    min_sigma : float
+        Minimum SD threshold when adapting noise_comp_sigma (default=2.5).
+    max_sigma : float
+        Maximum SD threshold when adapting noise_comp_sigma (default=4.0).
+
+    Frequency detection parameters
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    min_freq : float
+        Minimum frequency (Hz) considered for automatic noise detection
+        (default=17.0).
+    max_freq : float
+        Maximum frequency (Hz) considered for automatic noise detection
+        (default=99.0).
+    win_sz : float
+        Window size in Hz for noise frequency detection (default=6.0).
+    coarse_power_diff_hi : float
+        Power threshold (10*log10) above center power to detect the start
+        of a noise peak (default=4.0).
+    coarse_power_diff_lo : float
+        Power threshold (10*log10) above center power to detect the end
+        of a noise peak (default=1.76).
+    detect_chunk_freqs : bool
+        If True, detect individual noise frequencies within each chunk
+        (default=True).
+    fine_threshold_mult : float
+        Multiplier for fine-grained noise frequency detection threshold
+        (default=2.0).
+
+    Cleaning quality evaluation
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    fine_bounds_hi : tuple of float
+        Frequency bounds (Hz) around the target frequency used to detect
+        insufficient cleaning (default=(0.05, 0.05)).
+    fine_bounds_lo : tuple of float
+        Frequency bounds (Hz) around the target frequency used to detect
+        excessive cleaning (default=(0.4, 0.1)).
+    max_prop_above_hi : float
+        Maximum proportion of samples above the upper fine threshold before
+        cleaning is considered too weak (default=0.005).
+    max_prop_below_lo : float
+        Maximum proportion of samples below the lower fine threshold before
+        cleaning is considered too strong (default=0.005).
+
 
     Returns
     -------
@@ -570,13 +577,13 @@ def dss_line_plus(
                 logging.warning(f"vanilla_mode=True: Overriding {param_name} to False.")
 
         # Override all adaptive features
-        adaptiveNremove = False
-        adaptiveSigma = False
-        searchIndividualNoise = False
-        chunkLength = -1  # Zapline vanilla deals with single chunk
+        adaptive_n_remove = False
+        adaptive_sigma = False
+        detect_chunk_freqs = False
+        chunk_length = -1  # Zapline vanilla deals with single chunk
 
     # if nothing is adaptive, only one iteration per frequency
-    if not (adaptiveNremove and adaptiveSigma):
+    if not (adaptive_n_remove and adaptive_sigma):
         max_iterations = 1
 
     # check for globally flat channels
@@ -597,41 +604,45 @@ def dss_line_plus(
 
     # initialize configuration
     config = {
-        "sfreq": sfreq,
-        "fline": fline,
-        "nkeep": nkeep,
-        "adaptiveNremove": adaptiveNremove,
-        "fixedNremove": fixedNremove,
-        "minfreq": minfreq,
-        "maxfreq": maxfreq,
-        "chunkLength": chunkLength,
-        "minChunkLength": minChunkLength,
-        "noiseCompDetectSigma": noiseCompDetectSigma,
-        "adaptiveSigma": adaptiveSigma,
-        "minsigma": minsigma,
-        "maxsigma": maxsigma,
-        "detectionWinsize": detectionWinsize,
-        "coarseFreqDetectPowerDiff": coarseFreqDetectPowerDiff,
-        "coarseFreqDetectLowerPowerDiff": coarseFreqDetectLowerPowerDiff,
-        "searchIndividualNoise": searchIndividualNoise,
-        "freqDetectMultFine": freqDetectMultFine,
-        "detailedFreqBoundsUpper": detailedFreqBoundsUpper,
-        "detailedFreqBoundsLower": detailedFreqBoundsLower,
-        "maxProportionAboveUpper": maxProportionAboveUpper,
-        "maxProportionBelowLower": maxProportionBelowLower,
-        "analytics": {},
+        key: locals()[key]
+        for key in (
+            "sfreq",
+            "fline",
+            "nkeep",
+            "adaptive_n_remove",
+            "fixed_n_remove",
+            "min_freq",
+            "max_freq",
+            "chunk_length",
+            "min_chunk_length",
+            "noise_comp_sigma",
+            "adaptive_sigma",
+            "min_sigma",
+            "max_sigma",
+            "win_sz",
+            "coarse_power_diff_hi",
+            "coarse_power_diff_lo",
+            "detect_chunk_freqs",
+            "fine_threshold_mult",
+            "fine_bounds_hi",
+            "fine_bounds_lo",
+            "max_prop_above_hi",
+            "max_prop_below_lo",
+        )
     }
+    config["analytics"] = {}
+
 
     # detect noise frequencies if not provided
     if fline is None:
         fline = _detect_noise_frequencies(
             data,
             sfreq,
-            minfreq,
-            maxfreq,
-            detectionWinsize,
-            coarseFreqDetectPowerDiff,
-            coarseFreqDetectLowerPowerDiff,
+            min_freq,
+            max_freq,
+            win_sz,
+            coarse_power_diff_hi,
+            coarse_power_diff_lo,
         )
     elif not isinstance(fline, list):
         fline = [fline]
@@ -643,50 +654,55 @@ def dss_line_plus(
     config["detected_fline"] = fline
 
     # retain input data
-    clean_data = data.copy()
+    cleaned_data = data.copy()
 
     # Process each noise frequency
     for freq_idx, target_freq in enumerate(fline):
         print(f"Processing noise frequency: {target_freq:.2f} Hz")
 
-        if chunkLength == -1:
+        if chunk_length == -1:
             # single chunk
-            chunks = [(0, n_times)]
-        elif chunkLength == 0:
+            chunk_bounds = [(0, n_times)]
+        elif chunk_length == 0:
             # adaptive chunking
-            chunks = _adaptive_chunking(clean_data, sfreq, target_freq, minChunkLength)
+            chunk_bounds = _adaptive_chunking(
+                cleaned_data,
+                sfreq,
+                target_freq,
+                min_chunk_length
+                )
         else:
             # fixed-length chunks
-            chunk_samples = int(chunkLength * sfreq)
-            chunks = [
+            chunk_samples = int(chunk_length * sfreq)
+            chunk_bounds = [
                 (i, min(i + chunk_samples, n_times))
                 for i in range(0, n_times, chunk_samples)
             ]
 
         # initialize tracking variables
-        current_sigma = noiseCompDetectSigma
-        current_fixed = fixedNremove
-        too_strong_once = False
-        iteration = 0
+        current_sigma = noise_comp_sigma
+        current_n_remove = fixed_n_remove
+        seen_too_strong = False
+        iteration_idx = 0
         max_iterations = 20
 
-        while iteration < max_iterations:
-            iteration += 1
+        while iteration_idx < max_iterations:
+            iteration_idx += 1
 
             # Clean each chunk
             chunk_results = []
-            for chunk_start, chunk_end in chunks:
-                chunk_data = clean_data[chunk_start:chunk_end, :]
+            for chunk_start, chunk_end in chunk_bounds:
+                chunk_data = cleaned_data[chunk_start:chunk_end, :]
 
                 # Detect chunk-specific noise frequency
-                if searchIndividualNoise:
+                if detect_chunk_freqs:
                     chunk_freq, has_noise = _detect_chunk_noise_frequency(
                         chunk_data,
                         sfreq,
                         target_freq,
-                        detectionWinsize,
-                        freqDetectMultFine,
-                        detailed_freq_bounds=detailedFreqBoundsUpper,
+                        win_sz,
+                        fine_threshold_mult,
+                        detailed_freq_bounds=fine_bounds_hi,
                     )
                 else:
                     chunk_freq = target_freq
@@ -694,18 +710,18 @@ def dss_line_plus(
 
                 # Apply Zapline to chunk
                 if has_noise:
-                    if adaptiveNremove:
+                    if adaptive_n_remove:
                         n_remove = _detect_noise_components(
                             chunk_data, sfreq, chunk_freq, current_sigma, nkeep
                         )
-                        n_remove = max(n_remove, current_fixed)
+                        n_remove = max(n_remove, current_n_remove)
                     else:
-                        n_remove = current_fixed
+                        n_remove = current_n_remove
 
                     # Cap at 1/5 of components
                     n_remove = min(n_remove, n_chans // 5)
                 else:
-                    n_remove = current_fixed
+                    n_remove = current_n_remove
 
                 # clean chunk
                 cleaned_chunk = _apply_zapline_to_chunk(
@@ -724,77 +740,77 @@ def dss_line_plus(
                 )
 
             # reconstruct cleaned data
-            temp_clean = clean_data.copy()
+            cleaned_candidate = cleaned_data.copy()
             for result in chunk_results:
-                temp_clean[result["start"] : result["end"], :] = result["data"]
+                cleaned_candidate[result["start"] : result["end"], :] = result["data"]
 
             # check if cleaning is optimal
             cleaning_status = _check_cleaning_quality(
                 data,
-                temp_clean,
+                cleaned_candidate,
                 sfreq,
                 target_freq,
-                detectionWinsize,
-                freqDetectMultFine,
-                detailedFreqBoundsUpper,
-                detailedFreqBoundsLower,
-                maxProportionAboveUpper,
-                maxProportionBelowLower,
+                win_sz,
+                fine_threshold_mult,
+                fine_bounds_hi,
+                fine_bounds_lo,
+                max_prop_above_hi,
+                max_prop_below_lo,
             )
 
             # store analytics
             config["analytics"][f"freq_{freq_idx}"] = {
                 "target_freq": target_freq,
-                "iteration": iteration,
+                "iteration": iteration_idx,
                 "sigma": current_sigma,
-                "fixed_nremove": current_fixed,
-                "n_chunks": len(chunks),
+                "fixed_nremove": current_n_remove,
+                "n_chunks": len(chunk_bounds),
                 "chunk_results": chunk_results,
                 "cleaning_status": cleaning_status,
             }
 
             # check if we need to adapt
             if cleaning_status == "good":
-                clean_data = temp_clean
+                cleaned_data = cleaned_candidate
                 break
 
-            elif cleaning_status == "too_weak" and not too_strong_once:
-                if current_sigma > minsigma:
-                    current_sigma = max(current_sigma - 0.25, minsigma)
-                    current_fixed += 1
+            elif cleaning_status == "too_weak" and not seen_too_strong:
+                if current_sigma > min_sigma:
+                    current_sigma = max(current_sigma - 0.25, min_sigma)
+                    current_n_remove += 1
                     logging.info(
                         f"Cleaning too weak. Adjusting sigma to {current_sigma:.2f}, "
-                        f"fixed removal to {current_fixed}"
+                        f"fixed removal to {current_n_remove}"
                     )
                 else:
                     logging.info("At minimum sigma, accepting result")
-                    clean_data = temp_clean
+                    cleaned_data = cleaned_candidate
                     break
 
             elif cleaning_status == "too_strong":
-                too_strong_once = True
-                if current_sigma < maxsigma:
-                    current_sigma = min(current_sigma + 0.25, maxsigma)
-                    current_fixed = max(current_fixed - 1, fixedNremove)
+                seen_too_strong = True
+                if current_sigma < max_sigma:
+                    current_sigma = min(current_sigma + 0.25, max_sigma)
+                    current_n_remove = max(current_n_remove - 1, fixed_n_remove)
                     logging.info(
                         f"Cleaning too strong. Adjusting sigma to {current_sigma:.2f}, "
-                        f"fixed removal to {current_fixed}"
+                        f"fixed removal to {current_n_remove}"
                     )
                 else:
                     logging.info("At maximum sigma, accepting result")
-                    clean_data = temp_clean
+                    cleaned_data = cleaned_candidate
                     break
 
             else:
                 # Too strong takes precedence, or we can't improve further
-                clean_data = temp_clean
+                cleaned_data = cleaned_candidate
                 break
 
         # Generate diagnostic plot
-        if plotResults:
+        if plot_results:
             _plot_cleaning_results(
                 data,
-                clean_data,
+                cleaned_data,
                 sfreq,
                 target_freq,
                 config["analytics"][f"freq_{freq_idx}"],
@@ -805,11 +821,11 @@ def dss_line_plus(
     # add flat channels back to data, if present
     if flat_data is not None:
         full_clean = np.zeros((n_times, n_chans))
-        full_clean[:, active_channels] = clean_data
+        full_clean[:, active_channels] = cleaned_data
         full_clean[:, global_flat] = flat_data
-        clean_data = full_clean
+        cleaned_data = full_clean
 
-    return clean_data, config
+    return cleaned_data, config
 
 
 def _detect_noise_frequencies(

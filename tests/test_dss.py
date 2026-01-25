@@ -231,8 +231,8 @@ def test_dss_line_plus(mode):
                 sfreq,
                 fline=freq,
                 vanilla_mode=True,
-                fixedNremove=1,
-                plotResults=True,
+                fixed_n_remove=1,
+                plot_results=True,
                 dirname=tmpdir,
             )
     else:
@@ -241,11 +241,11 @@ def test_dss_line_plus(mode):
                 data,
                 sfreq,
                 fline=None,
-                adaptiveNremove=True,
-                adaptiveSigma=True,
-                chunkLength=0,
-                minChunkLength=10,
-                plotResults=True,
+                adaptive_n_remove=True,
+                adaptive_sigma=True,
+                chunk_length=0,
+                min_chunk_length=10,
+                plot_results=True,
                 dirname=tmpdir,
             )
 
@@ -263,13 +263,13 @@ def test_dss_line_plus(mode):
     reduction = 1 - psd_clean[idx] / psd_orig[idx]
 
     # Zapline should remove the vast majority of line noise
-    assert reduction > 0.85
+    assert reduction > 0.85  # arbitrary thresh
 
     # Broadband signal should be preserved
     band = (freqs > 5) & (freqs < 40)
     ratio = psd_clean[band].mean() / psd_orig[band].mean()
 
-    assert 0.7 < ratio < 1.3
+    assert 0.7 < ratio < 1.3  # arbitrary threshs
 
 if __name__ == "__main__":
     pytest.main([__file__])
