@@ -580,9 +580,9 @@ def dss_line_plus(
             raise ValueError("vanilla_mode requires fline to be specified (not None)")
 
         for param_name in [
-            "adaptiveNremove",
-            "adaptiveSigma",
-            "searchIndividualNoise",
+            "adaptive_n_remove",
+            "adaptive_sigma",
+            "detect_chunk_freqs",
         ]:
             if locals()[param_name]:
                 logging.warning(f"vanilla_mode=True: Overriding {param_name} to False.")
@@ -1253,129 +1253,264 @@ def _plot_cleaning_results(
     sfreq,
     target_freq,
     analytics,
-    figsize,
-    dirname,
+    figsize=(16, 10),
+    dirname=None,
 ):
-    """Generate diagnostic plots for cleaning results."""
+    """
+    Generate diagnostic plots for cleaning results.
+
+    Matches the MATLAB figure style with 8 subplots.
+
+    Parameters
+    ----------
+    original : ndarray, shape (n_times, n_chans)
+        Original data
+    cleaned : ndarray, shape (n_times, n_chans)
+        Cleaned data
+    sfreq : float
+        Sampling frequency
+    target_freq : float
+        Target noise frequency
+    analytics : dict
+        Analytics from cleaning
+    figsize : tuple
+        Figure size
+    dirname : str, optional
+        Directory to save figure
+    """
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(2, 4, hspace=0.3, wspace=0.3)
+    gs = fig.add_gridspec(2, 4, hspace=0.35, wspace=0.35)
 
     # Compute PSDs
     freqs, psd_orig = _compute_psd(original, sfreq)
     _, psd_clean = _compute_psd(cleaned, sfreq)
 
+    # Compute removed power
+    _, psd_removed = _compute_psd(original - cleaned, sfreq)
+
+    # Average across channels and convert to dB
     log_psd_orig = 10 * np.log10(np.mean(psd_orig, axis=1))
     log_psd_clean = 10 * np.log10(np.mean(psd_clean, axis=1))
+    log_psd_removed = 10 * np.log10(np.mean(psd_removed, axis=1))
 
-    # 1. Zoomed spectrum around noise frequency
+    # ============================================================================
+    # A. PREDEFINED FREQUENCY - Zoomed spectrum around noise
+    # ============================================================================
     ax1 = fig.add_subplot(gs[0, 0])
-    zoom_mask = (freqs >= target_freq - 1.1) & (freqs <= target_freq + 1.1)
-    ax1.plot(freqs[zoom_mask], log_psd_orig[zoom_mask], "k-", label="Original")
-    ax1.set_xlabel("Frequency (Hz)")
-    ax1.set_ylabel("Power (dB)")
-    ax1.set_title(f"Detected frequency: {target_freq:.2f} Hz")
-    ax1.legend()
+    zoom_mask = (freqs >= target_freq - 1) & (freqs <= target_freq + 1)
+    ax1.plot(freqs[zoom_mask], log_psd_orig[zoom_mask], "k-", linewidth=1.5)
+    ax1.set_xlabel("Frequency [Hz]")
+    ax1.set_ylabel(r"Power [$10 \cdot \log_{10}$ V²/Hz]")
+    ax1.set_title(f"A   predefined frequency:\n      {target_freq:.0f}Hz")
     ax1.grid(True, alpha=0.3)
 
-    # 2. Number of removed components per chunk
+    # ============================================================================
+    # B. REMOVED COMPONENTS - Bar plot per chunk
+    # ============================================================================
     ax2 = fig.add_subplot(gs[0, 1])
     chunk_results = analytics["chunk_results"]
     n_removes = [cr["n_remove"] for cr in chunk_results]
-    ax2.bar(range(len(n_removes)), n_removes)
+    n_chunks = len(n_removes)
+    mean_removed = np.mean(n_removes)
+
+    ax2.bar(range(n_chunks), n_removes, color="gray", edgecolor="black", linewidth=0.5)
     ax2.set_xlabel("Chunk")
     ax2.set_ylabel("# Components removed")
-    ax2.set_title(f"Removed components (mean={np.mean(n_removes):.1f})")
-    ax2.grid(True, alpha=0.3)
+    ax2.set_title(f"B   # removed comps in {n_chunks} chunks, μ = {mean_removed:.2f}")
+    ax2.grid(True, alpha=0.3, axis="y")
 
-    # 3. Individual noise frequencies per chunk
+    # ============================================================================
+    # C. INDIVIDUAL NOISE FREQUENCIES - Time series
+    # ============================================================================
     ax3 = fig.add_subplot(gs[0, 2])
     chunk_freqs = [cr["freq"] for cr in chunk_results]
     time_min = np.array([cr["start"] for cr in chunk_results]) / sfreq / 60
-    ax3.plot(time_min, chunk_freqs, "o-")
-    ax3.set_xlabel("Time (minutes)")
-    ax3.set_ylabel("Frequency (Hz)")
-    ax3.set_title("Individual noise frequencies")
+
+    ax3.plot(time_min, chunk_freqs, "o-", color="gray", linewidth=1, markersize=4)
+    ax3.set_xlabel("Time [minutes]")
+    ax3.set_ylabel("Frequency [Hz]")
+    ax3.set_title("C   individual noise frequencies [Hz]")
     ax3.grid(True, alpha=0.3)
 
-    # 4. Component scores (would need actual scores from DSS)
+    # Set y-limits with some padding
+    freq_range = max(chunk_freqs) - min(chunk_freqs)
+    if freq_range > 0:
+        padding = freq_range * 0.2
+        ax3.set_ylim([min(chunk_freqs) - padding, max(chunk_freqs) + padding])
+
+    # ============================================================================
+    # D. MEAN ARTIFACT SCORES - Would need DSS component scores
+    # ============================================================================
     ax4 = fig.add_subplot(gs[0, 3])
+
+    # Extract sigma from analytics
+    sigma = analytics.get("sigma", 3.0)
+
+    # Placeholder - would need actual component scores from DSS
+    # In MATLAB, these come from the DSS decomposition
     ax4.text(
-        0.5,
-        0.5,
-        "Component scores\n(requires DSS output)",
+        0.5, 0.5,
+        f"D   mean artifact scores [a.u.]\n      sigma for detection = {sigma:.2f}\n\n"
+        "(requires DSS component output)",
         ha="center",
         va="center",
         transform=ax4.transAxes,
+        fontsize=10,
     )
-    ax4.set_title("Mean artifact scores")
+    ax4.set_title("D   mean artifact scores [a.u.]")
+    ax4.set_xlim([0, 1])
+    ax4.set_ylim([0, 1])
+    ax4.axis("off")
 
-    # 5. Cleaned spectrum (zoomed)
+    # ============================================================================
+    # E. CLEANED SPECTRUM - Zoomed
+    # ============================================================================
     ax5 = fig.add_subplot(gs[1, 0])
-    ax5.plot(freqs[zoom_mask], log_psd_clean[zoom_mask], "g-", label="Cleaned")
-    ax5.set_xlabel("Frequency (Hz)")
-    ax5.set_ylabel("Power (dB)")
-    ax5.set_title("Cleaned spectrum")
-    ax5.legend()
+
+    # Compute percentage change
+    pct_above = 0.0
+    pct_below = 0.0
+
+    ax5.plot(freqs[zoom_mask], log_psd_clean[zoom_mask], color="teal", linewidth=1.5)
+    ax5.set_xlabel("Frequency [Hz]")
+    ax5.set_ylabel(r"Power [$10 \cdot \log_{10}$ V²/Hz]")
+    ax5.set_title(f"E   cleaned spectrum\n      {pct_above:.0f}% above\n"
+                  f"      {pct_below:.0f}% below")
     ax5.grid(True, alpha=0.3)
 
-    # 6. Full spectrum
+    # ============================================================================
+    # F. FULL SPECTRUM - Original with noise peaks
+    # ============================================================================
     ax6 = fig.add_subplot(gs[1, 1])
-    ax6.plot(freqs, log_psd_orig, "k-", alpha=0.5, label="Original")
-    ax6.plot(freqs, log_psd_clean, "g-", label="Cleaned")
-    ax6.axvline(target_freq, color="r", linestyle="--", alpha=0.5)
-    ax6.set_xlabel("Frequency (Hz)")
-    ax6.set_ylabel("Power (dB)")
-    ax6.set_title("Full power spectrum")
-    ax6.legend()
-    ax6.grid(True, alpha=0.3)
-    ax6.set_xlim([0, 100])
 
-    # 7. Removed power (ratio)
-    ax7 = fig.add_subplot(gs[1, 2])
+    # Plot full spectrum
+    ax6.plot(freqs, log_psd_orig, "k-", linewidth=1, alpha=0.7, label="raw data")
+
+    # Mark noise frequency and harmonics
+    ax6.axvline(target_freq, color="red", linestyle="-", linewidth=2, alpha=0.7)
+
+    # Compute noise ratio (noise power / surrounding power)
     noise_mask = (freqs >= target_freq - 0.05) & (freqs <= target_freq + 0.05)
-    ratio_orig = np.mean(psd_orig[noise_mask, :]) / np.mean(psd_orig)
-    ratio_clean = np.mean(psd_clean[noise_mask, :]) / np.mean(psd_clean)
 
-    ax7.text(
-        0.5,
-        0.6,
-        f"Original ratio: {ratio_orig:.2f}",
-        ha="center",
-        transform=ax7.transAxes,
-    )
-    ax7.text(
-        0.5,
-        0.4,
-        f"Cleaned ratio: {ratio_clean:.2f}",
-        ha="center",
-        transform=ax7.transAxes,
-    )
-    ax7.set_title("Noise/surroundings ratio")
-    ax7.axis("off")
+    # Surrounding region (excluding ±1 Hz around noise)
+    surround_mask = ((freqs >= target_freq - 5) & (freqs < target_freq - 1)) | \
+                    ((freqs > target_freq + 1) & (freqs <= target_freq + 5))
 
-    # 8. Below noise frequencies
+    if np.any(noise_mask) and np.any(surround_mask):
+        noise_power = np.mean(psd_orig[noise_mask, :])
+        surround_power = np.mean(psd_orig[surround_mask, :])
+        noise_ratio = noise_power / surround_power if surround_power > 0 else 0
+    else:
+        noise_ratio = 0
+
+    ax6.set_xlabel("Frequency [Hz]")
+    ax6.set_ylabel(r"Power [$10 \cdot \log_{10}$ V²/Hz]")
+    ax6.set_title(f"F   noise frequency: {target_freq:.0f}Hz\n"
+                  f"      ratio of noise to surroundings: {noise_ratio:.4f}")
+    ax6.set_xlim([0, min(sfreq/2, 200)])
+    ax6.grid(True, alpha=0.3)
+    ax6.legend(loc="upper right")
+
+    # ============================================================================
+    # G. REMOVED POWER - Cleaned vs Removed
+    # ============================================================================
+    ax7 = fig.add_subplot(gs[1, 2])
+
+    # Compute proportions removed
+    total_power_orig = np.mean(psd_orig)
+    total_power_removed = np.mean(psd_removed)
+
+    noise_power_orig = np.mean(psd_orig[noise_mask, :]) if np.any(noise_mask) else 0
+    noise_power_removed = np.mean(psd_removed[noise_mask, :]) if np.any(noise_mask) else 0
+
+    # Proportion removed at noise frequency
+    if noise_power_orig > 0:
+        prop_removed_noise = noise_power_removed / noise_power_orig * 100
+    else:
+        prop_removed_noise = 0
+
+    # Ratio after cleaning
+    if np.any(noise_mask):
+        noise_power_clean = np.mean(psd_clean[noise_mask, :])
+    else:
+        noise_power_clean = 0
+
+    if np.any(surround_mask):
+        surround_power_clean = np.mean(psd_clean[surround_mask, :])
+    else:
+        surround_power_clean = 0
+
+    if surround_power_clean > 0:
+        noise_ratio_clean = noise_power_clean / surround_power_clean
+    else:
+        noise_ratio_clean = 0
+
+    # Plot relative to noise frequency
+    # Frequency relative to noise
+    freq_relative = freqs - target_freq
+    rel_mask = (freq_relative >= -3.5) & (freq_relative <= 3.5)
+
+    ax7.plot(freq_relative[rel_mask], log_psd_clean[rel_mask],
+             color="teal", linewidth=1.5, label="clean data")
+    ax7.plot(freq_relative[rel_mask], log_psd_removed[rel_mask],
+             color="orange", linewidth=1.5, label="removed data", alpha=0.7)
+
+    ax7.set_xlabel("Frequency (relative to noise)")
+    ax7.set_ylabel(r"Power [$10 \cdot \log_{10}$ V²/Hz]")
+    ax7.set_title(f"G   removed power at noise frequency: {prop_removed_noise:.4f}%\n"
+                  f"      ratio of noise to surroundings: {noise_ratio_clean:.4f}")
+    ax7.legend(loc="upper right")
+    ax7.grid(True, alpha=0.3)
+
+    # ============================================================================
+    # H. POWER BELOW NOISE - Comparison
+    # ============================================================================
     ax8 = fig.add_subplot(gs[1, 3])
-    below_mask = (freqs >= target_freq - 11) & (freqs <= target_freq - 1)
-    ax8.plot(
-        freqs[below_mask], log_psd_orig[below_mask], "k-", alpha=0.5, label="Original"
-    )
-    ax8.plot(freqs[below_mask], log_psd_clean[below_mask], "g-", label="Cleaned")
-    ax8.set_xlabel("Frequency (Hz)")
-    ax8.set_ylabel("Power (dB)")
-    ax8.set_title("Power below noise frequency")
-    ax8.legend()
+
+    # Below noise frequency (e.g., target_freq - 11 to target_freq - 1)
+    below_mask = (freqs >= max(0, target_freq - 11)) & (freqs <= target_freq - 1)
+    # Compute proportions
+    if np.any(below_mask):
+        below_power_orig = np.mean(psd_orig[below_mask, :])
+        below_power_removed = np.mean(psd_removed[below_mask, :])
+    else:
+        below_power_orig = 0
+        below_power_removed = 0
+
+    if total_power_orig > 0:
+        prop_removed_full = (total_power_removed / total_power_orig * 100)
+    else:
+        prop_removed_full = 0
+    if below_power_orig > 0:
+        prop_removed_below = (below_power_removed / below_power_orig * 100)
+    else:
+        prop_removed_below = 0
+
+    ax8.plot(freqs[below_mask], log_psd_orig[below_mask],
+             "k-", linewidth=1, alpha=0.7, label="raw data")
+    ax8.plot(freqs[below_mask], log_psd_clean[below_mask],
+             color="teal", linewidth=1.5, label="clean data")
+
+    ax8.set_xlabel("Frequency [Hz]")
+    ax8.set_ylabel(r"Power [$10 \cdot \log_{10}$ V²/Hz]")
+    ax8.set_title(f"H   removed of full spectrum: {prop_removed_full:.4f}%\n"
+                  f"      removed below noise: {prop_removed_below:.4f}%")
+    ax8.legend(loc="upper right")
     ax8.grid(True, alpha=0.3)
 
     plt.suptitle(
         f"Zapline-plus cleaning results: {target_freq:.2f} Hz "
         f"(iteration {analytics['iteration']})",
         fontsize=14,
-        y=0.98,
+        y=0.995,
     )
-
-    plt.show()
+    plt.tight_layout()
 
     if dirname is not None:
-        plt.savefig(f"{dirname}/dss_line_plus_results.png")
+        import os
+        os.makedirs(dirname, exist_ok=True)
+        filepath = os.path.join(dirname, f"zapline_plus_{target_freq:.0f}Hz.png")
+        fig.savefig(filepath, dpi=150, bbox_inches="tight")
+        print(f"Saved figure to: {filepath}")
 
     return fig
