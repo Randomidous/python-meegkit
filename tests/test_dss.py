@@ -271,6 +271,8 @@ def test_dss_line_plus(mode):
 
     assert 0.7 < ratio < 1.3  # arbitrary threshs
 
+    plt.show()
+
 if __name__ == "__main__":
     pytest.main([__file__])
     # create_data(SNR=5, show=True)
